@@ -62,7 +62,7 @@
         <main class="db-content-area">
             <div class="db-greeting-section">
                 <h1 class="db-greeting-title">Hello <span class="username"></span> 👋</h1>
-                <p class="db-greeting-subtitle">"Small consistent gains build extraordinary wealth."</p>
+                <p class="db-greeting-subtitle">Balances and trades use your selected Deriv account. Real-account trades risk real money; check the account before trading.</p>
             </div>
 
             <section class="db-simulation-panel" id="db-simulation-panel" aria-label="Simulation account">
@@ -265,7 +265,7 @@
     }
 
     function isSimulationAccount() {
-        return SIMULATION_ACCOUNT_IDS.has(localStorage.getItem('active_loginid'));
+        return false; // Deriv accounts must show Deriv balances, not local simulations.
     }
 
     function updateSimulationVisibility() {

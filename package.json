@@ -4,6 +4,7 @@
   "description": "Dylan Trades premium dashboard override workspace",
   "scripts": {
     "dev": "node server.js",
+    "test": "node --test tests/*.test.js",
     "build": "mkdir -p dist/static/js dist/static/css dist/static/css/async dist/static/media dist/images && cp -r scripts/* dist/static/js/ && cp -r styles/* dist/static/css/ && cp -r styles/* dist/static/css/async/ && cp -r images/* dist/static/media/ && cp -r images/* dist/images/ && cp index.html dist/ && cp vercel.json dist/ && cp service-worker.js dist/ && node scripts/inject_env.js"
   },
   "private": true

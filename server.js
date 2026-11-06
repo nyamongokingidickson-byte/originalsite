@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const tokenExchange = require('./api/oauth/token');
 
 const PORT = 8080;
 const SIMULATION_ACCOUNT_IDS = new Set(['ROT91160344', 'ROT91181979']);
@@ -100,15 +101,16 @@ function handleSimulationApi(req, res, url) {
 }
 
 const server = http.createServer((req, res) => {
-    console.log(`${req.method} ${req.url}`);
+    console.log(`${req.method} ${req.url.split('?')[0]}`);
     
     let url = req.url.split('?')[0];
 
+    if (url === '/api/oauth/token') return void tokenExchange(req, res);
     if (handleSimulationApi(req, res, url)) return;
     
     // Normalize URL paths to filesystem paths
     let filePath = '';
-    if (url === '/' || url === '/index.html') {
+    if (url === '/' || url === '/index.html' || url === '/callback') {
         filePath = path.join(__dirname, 'index.html');
     } else if (url.startsWith('/static/js/')) {
         const fileName = url.substring('/static/js/'.length);
