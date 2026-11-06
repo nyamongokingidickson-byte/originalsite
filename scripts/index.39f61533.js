@@ -28520,9 +28520,10 @@ Based on last ${r} digits`,
                       try {
                         e = await n.text();
                       } catch { }
-                      throw Error(
-                        `[DerivWS] Failed to fetch accounts: ${n.status} ${n.statusText}${e ? ` - ${e}` : ""}`,
-                      );
+                      let t = 503 === n.status
+                        ? "Deriv's account service is temporarily unavailable (503). Please wait a few minutes, then select Retry sign in."
+                        : `[DerivWS] Failed to fetch accounts: ${n.status} ${n.statusText}${e ? ` - ${e}` : ""}`;
+                      throw Object.assign(Error(t), { status: n.status });
                     }
                     let a = await n.json(),
                       i =
@@ -29185,9 +29186,9 @@ Based on last ${r} digits`,
       let a = (e) => new Promise((t) => setTimeout(t, e)),
         i = (e) =>
           e instanceof Error &&
-          /(timed out|network|failed to fetch|load failed|connection|429|500|502|503|504)/i.test(
-            e.message,
-          ),
+          ("number" == typeof e.status
+            ? 429 === e.status || [500, 502, 503, 504].includes(e.status)
+            : /(timed out|network|failed to fetch|load failed|connection|429|500|502|503|504)/i.test(e.message)),
         l = async function (e) {
           let {
             delayMs: t = 700,

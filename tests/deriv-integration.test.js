@@ -181,3 +181,57 @@ test('refuses an OTP URL that would send credentials to a different host', async
     const { DerivWSAccountsService: service } = loadModule(30645, 7877, deps, { window: { location: { hostname: 'dylantrades.site' } }, localStorage, sessionStorage });
     await assert.rejects(service.getAuthenticatedWebSocketURL('token', 'DOT123'), /Invalid authenticated WebSocket URL/);
 });
+
+test('a Deriv accounts 503 is actionable and sign-in can resume without reusing the OAuth code', async () => {
+    const localStorage = storage(), sessionStorage = storage();
+    let accountCalls = 0, tokenCalls = 0, active;
+    const fastTimer = fn => setTimeout(fn, 0);
+    const retry = loadModule(39143, 24903, {}, { setTimeout: fastTimer, Error });
+    const deps = {
+        27412: { _: (obj, key, value) => { obj[key] = value; } },
+        5625: { Cy: () => [] },
+        5568: { _Z: () => '' },
+        39143: retry,
+        7877: { k: async () => {
+            accountCalls++;
+            if (accountCalls <= 2) return { ok: false, status: 503, statusText: '', text: async () => '{"errors":[{"code":"CircuitBreakerOpen"}]}' };
+            return { ok: true, json: async () => ({ data: [{ account_id: 'DOT123', account_type: 'demo', status: 'active', currency: 'USD' }] }) };
+        } },
+    };
+    const { DerivWSAccountsService: service } = loadModule(30645, 7877, deps, { window: { location: { hostname: 'dylantrades.site' } }, localStorage, sessionStorage, setTimeout: fastTimer, Error });
+    const oauthDeps = {
+        66175: { jf2: { CLIENT_ID: validBody.client_id }, SmL: () => validBody.redirect_uri, Q0H: () => '/api/oauth/token' },
+        5625: { Cy: () => [] },
+        5568: { _Z: () => '', ii: data => { active = data.activeLoginId; }, W7: () => sessionStorage.removeItem('auth_info') },
+        30645: { DerivWSAccountsService: service },
+        7877: { k: async () => { tokenCalls++; return { ok: true, json: async () => ({ access_token: 'test-token', expires_in: 3600 }) }; } },
+        39143: retry,
+        88199: { api_base: { init: async () => {} } },
+    };
+    const oauth = loadModule(58454, 39143, oauthDeps, { localStorage, sessionStorage, Error });
+    oauth.storeCodeVerifier(validBody.code_verifier);
+    const failure = await oauth.OAuthTokenExchangeService.exchangeCodeForToken(validBody.code);
+    assert.match(failure.error_description, /temporarily unavailable \(503\).*Retry sign in/);
+    assert.equal(accountCalls, 2);
+    assert.equal(tokenCalls, 1);
+    assert.equal(oauth.OAuthTokenExchangeService.getAccessToken(), 'test-token');
+    assert.equal(active, undefined);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const resumed = await oauth.OAuthTokenExchangeService.resumeAuthenticatedSession();
+    assert.equal(resumed.access_token, 'test-token');
+    assert.equal(tokenCalls, 1);
+    assert.equal(accountCalls, 3);
+    assert.equal(active, 'DOT123');
+});
+
+test('account retries distinguish temporary server errors from non-retryable HTTP failures', async () => {
+    const retry = loadModule(39143, 24903, {}, { setTimeout: fn => setTimeout(fn, 0), Error });
+    for (const [status, expectedAttempts] of [[400, 1], [401, 1], [429, 2], [503, 2]]) {
+        let attempts = 0;
+        await assert.rejects(retry.x(async () => {
+            attempts++;
+            throw Object.assign(new Error(`[DerivWS] Failed to fetch accounts: ${status}`), { status });
+        }, { retries: 1, shouldRetry: retry.K }));
+        assert.equal(attempts, expectedAttempts, `status ${status}`);
+    }
+});

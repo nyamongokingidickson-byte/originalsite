@@ -171,3 +171,32 @@ test('DTrader has its own labelled tab and preserves saved tab visibility and cu
     saved.set('manualTrader', { name: 'My Trading Tab', hidden: false });
     assert.equal(migrate({ key: 'manualTrader', name: 'DTrader', hidden: false }).name, 'My Trading Tab');
 });
+
+test('native DTrader trade-type navigation changes selection without sending a trade', () => {
+    const oldLocal = global.localStorage, oldSession = global.sessionStorage;
+    const storage = { getItem: () => null, setItem() {}, removeItem() {} };
+    global.localStorage = storage; global.sessionStorage = storage;
+    try {
+        const hooks = []; let cursor = 0, calls = 0;
+        const React = {
+            Fragment: Symbol('Fragment'),
+            createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+            useState: value => { const i = cursor++; if (!(i in hooks)) hooks[i] = value; return [hooks[i], next => { hooks[i] = typeof next === 'function' ? next(hooks[i]) : next; }]; },
+            useRef: value => { const i = cursor++; return hooks[i] || (hooks[i] = { current: value }); },
+            useEffect: () => {},
+            useCallback: fn => fn,
+        };
+        const base = { api: { send: () => { calls++; } } };
+        const Component = require('../scripts/dtrader').createComponent(React, { api_base: base });
+        const render = () => { cursor = 0; return Component(); };
+        const flatten = node => Array.isArray(node) ? node.flatMap(flatten) : node && typeof node === 'object' ? [node, ...flatten(node.children || [])] : [];
+        let nodes = flatten(render());
+        const chips = nodes.filter(n => n.props?.className?.includes('dt-type-chip'));
+        assert.deepEqual(chips.map(n => n.children[0]), ['Rise / Fall', 'Even / Odd', 'Matches / Differs', 'Over / Under']);
+        assert.equal(chips[0].props['aria-pressed'], true);
+        chips[2].props.onClick();
+        nodes = flatten(render());
+        assert.equal(nodes.find(n => n.children?.[0] === 'Matches / Differs' && n.props?.className?.includes('dt-type-chip')).props['aria-pressed'], true);
+        assert.equal(calls, 0);
+    } finally { global.localStorage = oldLocal; global.sessionStorage = oldSession; }
+});
