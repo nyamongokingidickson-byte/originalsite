@@ -140,64 +140,34 @@ test('expired OAuth session prevents new quotes or purchases', async () => {
     assert.equal(q.account.id, 'DOT123');
 });
 
-test('DTrader displays the requested platform without passing credentials and keeps the local ticket available', () => {
-    let currentState = false;
-    const React = {
-        Fragment: 'fragment',
-        useState: initial => initial === false ? [currentState, value => { currentState = value; }] : [initial, () => {}],
-        useRef: value => ({ current: value }),
-        useEffect: () => {},
-        createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
-    };
-    const DTrader = require('../scripts/dtrader').createComponent(React, { api_base: {} });
-    function flatten(node) {
-        if (!node || typeof node !== 'object') return [];
-        return [node, ...node.children.flatMap(flatten)];
-    }
-    const initial = flatten(DTrader());
-    const iframe = initial.find(item => item.type === 'iframe');
-    assert.equal(iframe.props.src, 'https://deriv-dtrader.vercel.app/');
-    assert.equal(iframe.props.referrerPolicy, 'no-referrer');
-    const externalLink = initial.find(item => item.type === 'a');
-    assert.equal(externalLink.props.href, iframe.props.src);
-    assert.equal(externalLink.props.target, '_blank');
-    initial.find(item => item.type === 'button' && item.children.includes('Use simple trading ticket')).props.onClick();
-    const alternate = flatten(DTrader());
-    assert.equal(alternate.some(item => item.type === 'iframe'), false);
-    assert.equal(alternate.some(item => typeof item.type === 'function' && item.type.name === 'LocalDTrader'), true);
+test('DTrader is a first-party component without external token handoff', () => {
+    const source = require('node:fs').readFileSync('scripts/dtrader.js', 'utf8');
+    assert.doesNotMatch(source, /deriv-dtrader\.vercel\.app|postMessage|iframe/);
+    const Component = require('../scripts/dtrader').createComponent({ createElement() {} }, { api_base: {} });
+    assert.equal(Component.name, 'LocalDTrader');
 });
 
-test('account handoff uses the OAuth token only for the connected account and exact DTrader origin', () => {
-    const { sendBridgeAuth, isBridgeAuthRequest } = require('../scripts/dtrader');
-    const s = setup(), sent = [];
-    const session = { getItem: () => JSON.stringify({ access_token: 'secret-token', expires_at: 5000 }) };
-    const target = { postMessage: (payload, origin) => sent.push({ payload, origin }) };
-    const frame = { contentWindow: target };
-    assert.equal(sendBridgeAuth(frame, s.base, s.storage, session, 'DOT123', () => 1000), true);
-    assert.equal(sent.length, 1);
-    assert.equal(sent[0].origin, 'https://deriv-dtrader.vercel.app');
-    assert.equal(sent[0].payload.token, 'secret-token');
-    assert.equal(sent[0].payload.loginid, 'DOT123');
-    assert.equal(isBridgeAuthRequest({ origin: sent[0].origin, source: target, data: { type: 'REQUEST_AUTH' } }, frame), true);
-    assert.equal(isBridgeAuthRequest({ origin: 'https://evil.example', source: target, data: { type: 'REQUEST_AUTH' } }, frame), false);
-    assert.equal(isBridgeAuthRequest({ origin: sent[0].origin, source: {}, data: { type: 'REQUEST_AUTH' } }, frame), false);
-    assert.equal(isBridgeAuthRequest({ origin: sent[0].origin, source: target, data: { type: 'OTHER' } }, frame), false);
-    assert.equal(sendBridgeAuth(frame, s.base, s.storage, session, 'CR123', () => 1000), false);
-    assert.equal(sendBridgeAuth(frame, s.base, s.storage, session, 'DOT123', () => 5000), false);
-    s.setAccount('CR123');
-    assert.equal(sendBridgeAuth(frame, s.base, s.storage, session, 'DOT123', () => 1000), false);
-    assert.equal(sent.length, 1);
+test('digit contracts send a validated prediction to Deriv', async () => {
+    const s = setup();
+    await s.controller.getQuote({ ...inputs, contractType: 'DIGITOVER', prediction: '5' });
+    assert.equal(s.calls[0].barrier, '5');
+    assert.equal(s.calls[0].contract_type, 'DIGITOVER');
+    await s.controller.getQuote({ ...inputs, contractType: 'DIGITEVEN' });
+    assert.equal(s.calls[1].barrier, undefined);
+    await assert.rejects(s.controller.getQuote({ ...inputs, contractType: 'DIGITMATCH', prediction: '10' }), /prediction digit/i);
+    assert.equal(s.calls.length, 2);
 });
 
-test('legacy handoff refuses a token unless it matches the selected account', () => {
-    const { sendBridgeAuth } = require('../scripts/dtrader');
-    const s = setup(), sent = [];
-    const frame = { contentWindow: { postMessage: (...args) => sent.push(args) } };
-    s.storage.setItem('authToken', 'legacy-secret');
-    s.storage.setItem('accountsList', JSON.stringify({ CR123: 'legacy-secret' }));
-    assert.equal(sendBridgeAuth(frame, s.base, s.storage, { getItem: () => null }, 'DOT123'), false);
-    s.storage.setItem('accountsList', JSON.stringify({ DOT123: 'legacy-secret' }));
-    assert.equal(sendBridgeAuth(frame, s.base, s.storage, { getItem: () => null }, 'DOT123'), true);
-    assert.equal(sent[0][0].loginid, 'DOT123');
-    assert.equal(sent[0][1], 'https://deriv-dtrader.vercel.app');
+test('DTrader has its own labelled tab and preserves saved tab visibility and custom names', () => {
+    const source = require('node:fs').readFileSync('scripts/async/698.5f7f5ff5.js', 'utf8');
+    assert.match(source, /\["manualTrader","DTrader"\]/);
+    assert.match(source, /id:"id-9"[^}]*}[^}]*children:\(0,n\.jsx\)\(rN,\{\}\)/);
+    const matcher = source.match(/return t\.map\((e=>\{let t=\{\.\.\.e,\.\.\.a\.get\(e\.key\)\};return[^}]+\})\)\.sort/);
+    assert(matcher, 'tab preference migration not found');
+    const saved = new Map([['manualTrader', { name: 'Manual Trader', hidden: true }], ['other', { name: 'Custom', hidden: false }]]);
+    const migrate = require('node:vm').runInNewContext(`(a => ${matcher[1]})`, {})(saved);
+    assert.equal(migrate({ key: 'manualTrader', name: 'DTrader', hidden: false }).name, 'DTrader');
+    assert.equal(migrate({ key: 'manualTrader', name: 'DTrader', hidden: false }).hidden, true);
+    saved.set('manualTrader', { name: 'My Trading Tab', hidden: false });
+    assert.equal(migrate({ key: 'manualTrader', name: 'DTrader', hidden: false }).name, 'My Trading Tab');
 });
