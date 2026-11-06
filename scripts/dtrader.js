@@ -110,10 +110,44 @@
         };
     }
 
+    const DTRADER_ORIGIN = 'https://deriv-dtrader.vercel.app';
+    // Credentials are read only when sending and never put in a URL or React state.
+    function bridgeCredentials(apiBase, storage, session, now = () => Date.now()) {
+        const account = connectedAccount(apiBase, storage, session, now);
+        if (!account) return null;
+        let token;
+        const legacy = storage.getItem('authToken');
+        if (legacy && legacy !== 'null' && legacy !== 'undefined') {
+            try {
+                const accounts = JSON.parse(storage.getItem('accountsList') || '{}');
+                // Never send a token for a different selected account.
+                token = typeof accounts[account.id] === 'string' && accounts[account.id] === legacy ? legacy : null;
+            } catch { return null; }
+        } else {
+            try {
+                const auth = JSON.parse(session.getItem('auth_info') || 'null');
+                token = auth?.expires_at && now() < auth.expires_at ? auth.access_token : null;
+            } catch { return null; }
+        }
+        if (typeof token !== 'string' || !token || token === 'null' || token === 'undefined') return null;
+        return { token, loginid: account.id, currency: account.currency, demo: account.demo, api: account.api };
+    }
+    function sendBridgeAuth(frame, apiBase, storage, session, expectedAccount, now = () => Date.now()) {
+        const auth = bridgeCredentials(apiBase, storage, session, now);
+        if (!frame?.contentWindow || !auth || auth.loginid !== expectedAccount) return false;
+        try {
+            frame.contentWindow.postMessage({ type: 'DERIV_AUTH', token: auth.token, loginid: auth.loginid, currency: auth.currency }, DTRADER_ORIGIN);
+            return true;
+        } catch { return false; }
+    }
+    function isBridgeAuthRequest(event, frame) {
+        return !!frame?.contentWindow && event.origin === DTRADER_ORIGIN && event.source === frame.contentWindow && event.data?.type === 'REQUEST_AUTH';
+    }
+
     function createComponent(React, apiModule) {
         const h = React.createElement;
         const { useState, useRef, useEffect, useCallback } = React;
-        return function DTrader() {
+        function LocalDTrader() {
             const base = apiModule.api_base;
             const controller = useRef(null);
             if (!controller.current) controller.current = createTradeController(base, localStorage, () => Date.now(), sessionStorage);
@@ -259,7 +293,82 @@
                             quote && h('div', { className: 'dt-quote' }, h('div', { className: 'dt-eyebrow' }, 'REVIEW YOUR QUOTE'), h('strong', null, `${quote.contractType === 'CALL' ? 'Rise' : 'Fall'} · ${quote.duration} ticks`), h('p', null, quote.description), h('div', { className: 'dt-quote-row' }, h('span', null, 'Purchase price'), h('strong', null, money(quote.price, quote.account.currency))), h('div', { className: 'dt-quote-row' }, h('span', null, 'Potential payout'), h('strong', null, money(quote.payout, quote.account.currency))), h('small', null, 'Quote expires after 15 seconds. The purchase is sent to the account shown above.'), h('button', { type: 'button', className: 'dt-buy', disabled: !!pending, onClick: purchase }, pending === 'buy' ? 'Submitting…' : `Confirm purchase · ${money(quote.price, quote.account.currency)}`)),
                             error && h('p', { className: 'dt-error', role: 'alert' }, error))),
                     result && h('section', { className: 'dt-card dt-result', 'aria-live': 'polite' }, h('div', { className: 'dt-eyebrow' }, 'LATEST CONTRACT'), h('h2', null, result.status === 'won' ? 'Won' : result.status === 'lost' ? 'Lost' : result.is_sold ? 'Closed' : 'Open'), h('p', null, `Contract #${result.contract_id || contract}`), result.profit != null && h('p', null, `Profit / loss: ${money(result.profit, account.currency)}`), h('p', { className: 'dt-footnote' }, 'Check your Deriv portfolio for full contract details.'))));
+        }
+        return function DTrader() {
+            const [showLocal, setShowLocal] = useState(false);
+            const [sharing, setSharing] = useState(false);
+            const [bridgeAccount, setBridgeAccount] = useState(null);
+            const [bridgeError, setBridgeError] = useState('');
+            const frameRef = useRef(null), retries = useRef([]), last = useRef(null), serial = useRef(0);
+            const base = apiModule.api_base;
+            const clearRetries = () => { retries.current.forEach(clearTimeout); retries.current = []; };
+            useEffect(() => {
+                if (!sharing || showLocal) { last.current = null; setBridgeAccount(null); return; }
+                const update = () => {
+                    const next = bridgeCredentials(base, localStorage, sessionStorage);
+                    const previous = last.current;
+                    if ((!next && previous) || (next && (!previous || next.loginid !== previous.loginid || next.token !== previous.token || next.api !== previous.api || next.currency !== previous.currency))) {
+                        clearRetries();
+                        setBridgeError('');
+                        last.current = next;
+                        setBridgeAccount(next ? { id: next.loginid, currency: next.currency, demo: next.demo, key: ++serial.current } : null);
+                    }
+                };
+                update();
+                const interval = setInterval(update, 500);
+                window.addEventListener('deriv:account-switch', update);
+                window.addEventListener('storage', update);
+                return () => { clearInterval(interval); clearRetries(); last.current = null; window.removeEventListener('deriv:account-switch', update); window.removeEventListener('storage', update); };
+            }, [sharing, showLocal, base]);
+            useEffect(() => {
+                if (!sharing || showLocal || !bridgeAccount) return;
+                const receive = event => {
+                    if (isBridgeAuthRequest(event, frameRef.current)) sendBridgeAuth(frameRef.current, base, localStorage, sessionStorage, bridgeAccount.id);
+                    else if (event.origin === DTRADER_ORIGIN && event.source === frameRef.current?.contentWindow && event.data?.type === 'INVALID_TOKEN') setBridgeError('DTrader reported that the token is invalid. Sign in again and reconnect your account.');
+                };
+                window.addEventListener('message', receive);
+                return () => window.removeEventListener('message', receive);
+            }, [sharing, showLocal, bridgeAccount, base]);
+            const frameLoaded = () => {
+                clearRetries();
+                if (!sharing || !bridgeAccount) return;
+                // The child may set up its message listener shortly after its load event.
+                [0, 500, 1500, 3000].forEach(delay => retries.current.push(setTimeout(() => {
+                    sendBridgeAuth(frameRef.current, base, localStorage, sessionStorage, bridgeAccount.id);
+                }, delay)));
+            };
+            const toggleSharing = () => {
+                if (sharing) { clearRetries(); setBridgeError(''); setSharing(false); return; }
+                if (window.confirm('Share your Deriv trading token with deriv-dtrader.vercel.app? Its operator may use the token to trade on accounts it authorizes and may retain it after you sign out of Dylan Trades. Only continue if you trust this service.')) setSharing(true);
+            };
+            return h('section', { className: 'dt-external' },
+                h('div', { className: 'dt-external-bar' },
+                    h('div', null,
+                        h('h1', null, 'DTrader'),
+                        h('p', null, showLocal
+                            ? 'Use the Dylan Trades Rise/Fall ticket with your connected account.'
+                            : 'Hosted by deriv-dtrader.vercel.app. Check the account shown inside DTrader before trading.')),
+                    h('div', { className: 'dt-external-actions' },
+                        !showLocal && h('button', { type: 'button', onClick: toggleSharing }, sharing ? 'Stop sharing account' : 'Connect Dylan Trades account'),
+                        h('button', { type: 'button', onClick: () => setShowLocal(!showLocal) }, showLocal ? 'Show DTrader' : 'Use simple trading ticket'),
+                        h('a', { href: DTRADER_ORIGIN + '/', target: '_blank', rel: 'noopener noreferrer' }, 'Open DTrader in a new tab ↗'))),
+                showLocal ? h(LocalDTrader) : h(React.Fragment, null,
+                    h('p', { className: 'dt-embed-note', role: 'status' }, sharing
+                        ? bridgeAccount ? `Sharing is enabled for ${bridgeAccount.demo ? 'demo' : 'real or unverified'} account ${bridgeAccount.id}. Verify the same account and balance inside DTrader before trading. Stopping sharing or signing out here may not sign you out there.` : 'Waiting for your selected Deriv account to connect. Sign in or reconnect before sharing.'
+                        : 'Your account is not shared unless you choose Connect. The external service may retain an earlier session; always verify its account before trading. If it does not load, open it in a new tab.'),
+                    bridgeError && h('p', { className: 'dt-embed-note', role: 'alert' }, bridgeError),
+                    (!sharing || bridgeAccount) && h('iframe', {
+                        key: sharing ? `connected-${bridgeAccount.key}` : 'independent',
+                        ref: frameRef,
+                        className: 'dt-external-frame',
+                        title: 'DTrader trading platform',
+                        src: DTRADER_ORIGIN + '/',
+                        referrerPolicy: 'no-referrer',
+                        allow: 'clipboard-write',
+                        loading: 'lazy',
+                        onLoad: frameLoaded,
+                    })));
         };
     }
-    return { createComponent, createTradeController, connectedAccount, QUOTE_LIFETIME_MS };
+    return { createComponent, createTradeController, connectedAccount, bridgeCredentials, sendBridgeAuth, isBridgeAuthRequest, QUOTE_LIFETIME_MS };
 });

@@ -8717,41 +8717,37 @@
             requestProposals() {
               let e = !1;
               Promise.all(
-                this.proposal_templates.map((t) => {
-                  (0, T.l6)(() => d.DO.api.send(t)).catch((t) =>
-                    "ContractBuyValidationError" === t.error.code
-                      ? (this.data.proposals.push({
-                        ...t.error.echo_req,
-                        ...t.echo_req.passthrough,
-                        error: t,
-                      }),
-                        null)
-                      : (!e &&
-                        ((e = !0),
-                          this.$scope.observer.emit("Error", t.error)),
-                        null),
-                  );
-                }),
+                this.proposal_templates.map((t) =>
+                  (0, T.l6)(() => d.DO.api.send(t)).catch((n) => {
+                    let a = n?.error || n || { message: "Proposal request failed." };
+                    if ("ContractBuyValidationError" === a.code) {
+                      this.data.proposals.push({ ...t.passthrough, error: n });
+                      this.checkProposalReady();
+                    } else if (!e) {
+                      e = !0;
+                      this.$scope.observer.emit("Error", a);
+                    }
+                    return null;
+                  }),
+                ),
               );
             }
             requestProposalsVH() {
               let e = !1;
               Promise.all(
-                this.vhProposalTemplates.map((t) => {
-                  (0, T.l6)(() => d.PL.api.send(t)).catch((t) =>
-                    "ContractBuyValidationError" === t.error.code
-                      ? (this.data.vh_proposals.push({
-                        ...t.error.echo_req,
-                        ...t.echo_req.passthrough,
-                        error: t,
-                      }),
-                        null)
-                      : (!e &&
-                        ((e = !0),
-                          this.$scope.observer.emit("Error", t.error)),
-                        null),
-                  );
-                }),
+                this.vhProposalTemplates.map((t) =>
+                  (0, T.l6)(() => d.PL.api.send(t)).catch((n) => {
+                    let a = n?.error || n || { message: "Proposal request failed." };
+                    if ("ContractBuyValidationError" === a.code) {
+                      this.data.vh_proposals.push({ ...t.passthrough, error: n });
+                      this.checkProposalReadyVH();
+                    } else if (!e) {
+                      e = !0;
+                      this.$scope.observer.emit("Error", a);
+                    }
+                    return null;
+                  }),
+                ),
               );
             }
             observeProposals() {
@@ -8759,6 +8755,7 @@
               let e = d.DO.api.onMessage().subscribe((e) => {
                 if ("proposal" === e.data.msg_type) {
                   let { passthrough: t, proposal: n } = e.data;
+                  t = t || e.data.echo_req?.passthrough;
                   n &&
                     -1 ===
                     this.data.proposals.findIndex((e) => e.id === n.id) &&
@@ -8773,6 +8770,7 @@
               let e = d.PL.api.onMessage().subscribe((e) => {
                 if ("proposal" === e.data.msg_type) {
                   let { passthrough: t, proposal: n } = e.data;
+                  t = t || e.data.echo_req?.passthrough;
                   n &&
                     -1 ===
                     this.data.vh_proposals.findIndex(
@@ -14662,6 +14660,13 @@ Based on last ${r} digits`,
             !t.underlying_symbol &&
             (t.underlying_symbol = t.symbol),
             delete t.symbol,
+            ["barrier", "barrier2"].forEach((e) => {
+              "number" == typeof t[e] && Number.isFinite(t[e]) && (t[e] = String(t[e]));
+            }),
+            !["TICKHIGH", "TICKLOW"].includes(t.contract_type) && delete t.selected_tick,
+            ["TICKHIGH", "TICKLOW"].includes(t.contract_type) &&
+              "string" == typeof t.selected_tick && /^\d+$/.test(t.selected_tick) &&
+              (t.selected_tick = Number(t.selected_tick)),
             t
           );
         },
@@ -17409,7 +17414,7 @@ Based on last ${r} digits`,
             s.GL.pred_setter.allow_pred_setter &&
             !_.includes(e) &&
             (t.prediction = s.GL.pred_setter.prediction),
-            _.includes(e) && delete t.prediction,
+            _.includes(e) && !["TICKLOW", "TICKHIGH"].includes(e) && delete t.prediction,
             void 0 !== t.prediction &&
             (p.parameters.selected_tick = t.prediction),
             ("NOTOUCH" === p.parameters.contract_type ||
@@ -30209,7 +30214,7 @@ Based on last ${r} digits`,
           980: "1f1ed9fd",
           993: "26688fbc",
         }[e] +
-        ".js?v=dtrader_v1"
+        ".js?v=dtrader_v3"
       );
     }),
     (n.miniCssF = function (e) {
