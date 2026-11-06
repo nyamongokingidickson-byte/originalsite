@@ -13646,7 +13646,7 @@ Based on last ${r} digits`,
                     (null === (n = this.api) || void 0 === n
                       ? void 0
                       : n.connection.readyState) !== 1 ||
-                    e)
+                    o)
                 ) {
                   (null === (a = this.api) || void 0 === a
                     ? void 0
@@ -13820,8 +13820,10 @@ Based on last ${r} digits`,
           ) {
             this.account_id = (0, m.d2)() ?? "";
             try {
-              let e = await this.api.balance(),
-                t = null == e ? void 0 : e.balance,
+              let e = await this.api.balance();
+              if (e?.error || !e?.balance || e.balance.balance == null || e.balance.balance === "" || !Number.isFinite(Number(e.balance.balance)))
+                throw Error(e?.error?.message || "Unable to load the Deriv account balance.");
+              let t = e.balance,
                 n = i.DerivWSAccountsService.getStoredAccounts(),
                 a = this.account_id,
                 l = f(a),
@@ -13832,7 +13834,7 @@ Based on last ${r} digits`,
                   (null == c ? void 0 : c.currency) ||
                   (null == t ? void 0 : t.currency) ||
                   "USD",
-                m = l ? a : null == t ? void 0 : t.loginid,
+                m = a,
                 _ = (null == n ? void 0 : n.length)
                   ? n
                     .filter((e) => !e.status || "active" === e.status)
@@ -13841,7 +13843,7 @@ Based on last ${r} digits`,
                       return {
                         balance: t
                           ? h(e.account_id, s)
-                          : parseFloat(e.balance || "0") || 0,
+                          : e.account_id === a ? s : parseFloat(e.balance || "0") || 0,
                         currency: e.currency || "USD",
                         is_virtual: t
                           ? 0
@@ -15345,19 +15347,12 @@ Based on last ${r} digits`,
             t = Object.keys(e).find((e) => e.startsWith("VRTC"));
           return t ? e[t] : null;
         },
-        ea = () => {
-          let e = M(localStorage, "nao_balance_overrides_cache_v1", []);
-          return Array.isArray(e)
-            ? e
-              .map((e) => (e && "object" == typeof e ? e.loginid : null))
-              .filter((e) => "string" == typeof e)
-            : [];
-        },
+        ea = () => [],
         ei = (e) =>
           !!(e && "string" == typeof e && e.startsWith("CR")) &&
           ea().includes(e),
         el = (e) => (ei(e) ? en() : null),
-        eo = ["ROT91160344", "ROT91181979"],
+        eo = [],
         es = (e) => eo.includes(e);
     },
     49243: function (e, t, n) {
@@ -17104,12 +17099,7 @@ Based on last ${r} digits`,
             ? { $id: String(e.$id ?? ""), loginid: t, desired_balance: n }
             : null;
         },
-        p = () => {
-          let e = m(localStorage.getItem(l));
-          return Array.isArray(e)
-            ? e.map((e) => _(e)).filter((e) => !!e)
-            : [];
-        },
+        p = () => [],
         b = (e) => {
           (localStorage.setItem(l, JSON.stringify(e)),
             window.dispatchEvent(new Event(o)));
@@ -17121,20 +17111,7 @@ Based on last ${r} digits`,
             () => window.removeEventListener(o, t)
           );
         },
-        h = async () => {
-          let e;
-          await c();
-          try {
-            e = await s.listDocuments(i.Eo, i.nC);
-          } catch (e) {
-            throw u(e);
-          }
-          let t = ((null == e ? void 0 : e.documents) ?? [])
-            .map((e) => _(e))
-            .filter((e) => !!e)
-            .sort((e, t) => e.loginid.localeCompare(t.loginid));
-          return (b(t), t);
-        },
+        h = async () => [],
         v = async (e, t) => {
           let n;
           await c();
@@ -26435,6 +26412,8 @@ Based on last ${r} digits`,
                   "balance" === n && t && !a)
               ) {
                 let e = t.balance;
+                if (w && e && Number.isFinite(Number(e.balance)))
+                  L.DerivWSAccountsService.updateStoredAccountBalance(e.loginid || m, e.balance, e.currency);
                 if (null == e ? void 0 : e.accounts)
                   h.setAllAccountsBalance(e);
                 else if (null == e ? void 0 : e.loginid) {
@@ -26485,7 +26464,7 @@ Based on last ${r} digits`,
                 }
               }
             },
-            [h, g, m],
+            [h, g, m, w],
           );
           return (
             (0, o.useEffect)(() => {
@@ -26986,12 +26965,7 @@ Based on last ${r} digits`,
                         }),
                           !n)
                       ) {
-                        let e = (0, d.lG)();
-                        e &&
-                          L.DerivWSAccountsService.getAuthenticatedWebSocketURL(
-                            e,
-                            s.loginid,
-                          );
+                        // The connection bootstrap requests an OTP when it opens the socket.
                       }
                     } else
                       (0, d.lW)(s, {
@@ -28441,10 +28415,7 @@ Based on last ${r} digits`,
         },
         b = () => {
           let e = window.location.hostname;
-          return "localhost" === e ||
-            e.includes("staging") ||
-            e.includes("127.0.0.1") ||
-            e.includes(".devtunnels.ms")
+          return /^staging-app\.deriv\.(com|me|be)$/i.test(e)
             ? "https://staging-api.derivws.com/trading/v1/"
             : "https://api.derivws.com/trading/v1/";
         },
@@ -28618,6 +28589,13 @@ Based on last ${r} digits`,
                     throw Error(
                       "[DerivWS] OTP response did not contain a WebSocket URL",
                     );
+                  let d;
+                  try { d = new URL(r); } catch { }
+                  if (!d || d.protocol !== "wss:" ||
+                    d.hostname !== new URL(b()).hostname ||
+                    !/^\/trading\/v1\/options\/ws\/(demo|real)$/.test(d.pathname) ||
+                    !d.searchParams.get("otp"))
+                    throw Error("[DerivWS] Invalid authenticated WebSocket URL");
                   return (this.storeWebSocketURL(r, t, n), r);
                 },
                 { retries: 1, shouldRetry: s.K },
@@ -28650,7 +28628,9 @@ Based on last ${r} digits`,
               "No demo account available for special account execution.",
             );
           let s = (null == o ? void 0 : o.account_id) || f(i, t),
-            r = (s && i.find((e) => e.account_id === s)) || i[0];
+            r = s && i.find((e) => e.account_id === s);
+          if (!r || (r.status && r.status !== "active"))
+            throw Error("The selected Deriv account is unavailable. Please select an active account.");
           return this.fetchOTPWebSocketURL(e, r.account_id, n);
         }
         static storeAccounts(e) {
@@ -28964,25 +28944,6 @@ Based on last ${r} digits`,
             body: JSON.stringify(e),
             timeoutMs: 15e3,
           }),
-        U = async (e) => {
-          let t = new URLSearchParams({
-            grant_type: e.grant_type,
-            client_id: e.client_id,
-            code: e.code,
-            redirect_uri: e.redirect_uri,
-            code_verifier: e.code_verifier,
-          });
-          return (0, s.k)(a.jf2.TOKEN_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: t.toString(),
-            timeoutMs: 15e3,
-          });
-        },
-        P = () => {
-          let e = (0, a.Q0H)();
-          return e.startsWith("/api/") || e.startsWith("api/");
-        },
         M = (e, t) => {
           null == e || e(t);
         },
@@ -29033,7 +28994,7 @@ Based on last ${r} digits`,
             let t = e.find((e) => e.account_id === n);
             if (t) return t;
           }
-          return e.find((e) => "real" === e.account_type) || e[0];
+          return e.find((e) => "demo" === e.account_type && (!e.status || e.status === "active")) || e.find((e) => !e.status || e.status === "active") || e[0];
         },
         G = (e) => {
           let t = {
@@ -29067,14 +29028,9 @@ Based on last ${r} digits`,
           (0, r.x)(
             async () => {
               let t;
-              return (
-                P()
-                  ? (t = await U(e))
-                  : 404 === (t = await D(e)).status && (t = await U(e)),
-                X(t)
-              );
+              return (t = await D(e), X(t));
             },
-            { retries: 1, shouldRetry: r.K },
+            { retries: 0, shouldRetry: r.K },
           );
       class H {
         static getAuthInfo() {
@@ -29113,10 +29069,7 @@ Based on last ${r} digits`,
               : {};
           try {
             M(t, "loading_accounts");
-            let a = o.DerivWSAccountsService.getStoredAccounts(),
-              i = (null == a ? void 0 : a.length)
-                ? a
-                : await o.DerivWSAccountsService.fetchAccountsList(e);
+            let i = await o.DerivWSAccountsService.fetchAccountsList(e);
             if (!i.length)
               return (
                 this.clearAuthInfo(),
@@ -29139,10 +29092,7 @@ Based on last ${r} digits`,
                 syncUrl: !0,
               }),
               M(t, "preparing_connection"),
-              o.DerivWSAccountsService.getAuthenticatedWebSocketURL(
-                e,
-                d.account_id,
-              )
+              Promise.resolve()
                 .then(async () => {
                   let { api_base: e } = await Promise.resolve().then(
                     n.bind(n, 88199),
@@ -29315,9 +29265,7 @@ Based on last ${r} digits`,
             (0, a._)(
               this,
               "is_mock_mode_enabled",
-              ["ROT91160344", "ROT91181979"].includes(
-                localStorage.getItem("active_loginid"),
-              ),
+              !1,
             ),
             (0, a._)(this, "mock_real_balance", 1e4),
             (0, a._)(this, "mock_demo_balance", 500),
@@ -29344,7 +29292,7 @@ Based on last ${r} digits`,
               this.is_form_visible = e;
             }),
             (0, a._)(this, "setMockModeEnabled", (e) => {
-              ((this.is_mock_mode_enabled = e), this.persist());
+              ((this.is_mock_mode_enabled = !1), this.persist());
             }),
             (0, a._)(this, "setRealBalance", (e) => {
               ((this.mock_real_balance = Math.max(0, e)), this.persist());
@@ -29436,8 +29384,7 @@ Based on last ${r} digits`,
                 let e = localStorage.getItem(o);
                 if (!e) return;
                 let t = JSON.parse(e);
-                ("boolean" == typeof t.is_mock_mode_enabled &&
-                  (this.is_mock_mode_enabled = t.is_mock_mode_enabled),
+                ((this.is_mock_mode_enabled = !1),
                   "number" == typeof t.mock_real_balance &&
                   Number.isFinite(t.mock_real_balance) &&
                   (this.mock_real_balance = Math.max(
@@ -29507,12 +29454,7 @@ Based on last ${r} digits`,
               settleMockTrade: i.aD.bound,
             }),
             this.loadSettings(),
-            ["ROT91160344", "ROT91181979"].includes(
-              localStorage.getItem("active_loginid"),
-            ) &&
-            ((this.is_mock_mode_enabled = !0),
-              (this.mock_demo_balance = 500),
-              (this.win_rate = 80)),
+            (this.is_mock_mode_enabled = !1),
             (s = this));
         }
       }
@@ -30267,7 +30209,7 @@ Based on last ${r} digits`,
           980: "1f1ed9fd",
           993: "26688fbc",
         }[e] +
-        ".js?v=dylantrades_layout"
+        ".js?v=deriv_oauth_v2"
       );
     }),
     (n.miniCssF = function (e) {
