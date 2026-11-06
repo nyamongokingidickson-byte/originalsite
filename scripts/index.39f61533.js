@@ -30209,7 +30209,7 @@ Based on last ${r} digits`,
           980: "1f1ed9fd",
           993: "26688fbc",
         }[e] +
-        ".js?v=deriv_oauth_v2"
+        ".js?v=dtrader_v1"
       );
     }),
     (n.miniCssF = function (e) {

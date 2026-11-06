@@ -1,0 +1,141 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { createTradeController, connectedAccount, QUOTE_LIFETIME_MS } = require('../scripts/dtrader');
+function setup() {
+    let id = 'DOT123', time = 1000;
+    const accounts = { DOT123: { currency: 'USD', account_type: 'demo', is_virtual: true }, CR123: { currency: 'USD', account_type: 'real', is_virtual: false } };
+    const stored = new Map();
+    const storage = { getItem: key => key === 'active_loginid' ? id : key === 'clientAccounts' ? JSON.stringify(accounts) : stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) };
+    const calls = [];
+    const api = { connection: { readyState: 1 }, send: async request => {
+        calls.push(request);
+        if (request.proposal) return { proposal: { id: 'quote-1', ask_price: '1.00', payout: '1.90', longcode: 'A Rise contract' } };
+        if (request.buy) return { buy: { contract_id: 42, buy_price: 1 } };
+    } };
+    const base = { api, account_id: id, is_authorized: true };
+    return { storage, base, api, calls, controller: createTradeController(base, storage, () => time), setAccount: value => { id = value; }, setTime: value => { time = value; } };
+}
+const inputs = { symbol: 'R_100', contractType: 'CALL', amount: '1', duration: '5' };
+
+test('reviewed quote is sent to Deriv only once when purchased', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    assert.equal(connectedAccount(s.base, s.storage).demo, true);
+    assert.deepEqual(s.calls[0], { proposal: 1, amount: 1, basis: 'stake', contract_type: 'CALL', currency: 'USD', duration: 5, duration_unit: 't', symbol: 'R_100' });
+    assert.equal(s.calls.length, 1);
+    const bought = await s.controller.buy(q);
+    assert.equal(bought.contract_id, 42);
+    assert.deepEqual(s.calls[1], { buy: 'quote-1', price: 1 });
+    await assert.rejects(s.controller.buy(q), /Get a new quote/);
+    assert.equal(s.calls.length, 2);
+});
+test('rejects invalid inputs and disconnected accounts without sending an order', async () => {
+    const s = setup();
+    for (const input of [{ ...inputs, amount: 0 }, { ...inputs, duration: 11 }, { ...inputs, contractType: 'OTHER' }, { ...inputs, symbol: '' }])
+        await assert.rejects(s.controller.getQuote(input), /positive stake/);
+    s.base.is_authorized = false;
+    await assert.rejects(s.controller.getQuote(inputs), /not connected/);
+    assert.equal(s.calls.length, 0);
+});
+test('invalidated or expired quotes cannot purchase', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    s.controller.invalidate();
+    await assert.rejects(s.controller.buy(q), /Get a new quote/);
+    const q2 = await s.controller.getQuote(inputs);
+    s.setTime(1000 + QUOTE_LIFETIME_MS);
+    await assert.rejects(s.controller.buy(q2), /expired/);
+    assert.equal(s.calls.filter(call => call.buy).length, 0);
+});
+test('account or socket changes invalidate the purchase before it is sent', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    s.setAccount('CR123'); s.base.account_id = 'CR123';
+    await assert.rejects(s.controller.buy(q), /account or connection changed/i);
+    assert.equal(s.calls.filter(call => call.buy).length, 0);
+});
+test('a delayed quote is rejected after an account switch', async () => {
+    const s = setup();
+    let resolve;
+    s.api.send = () => new Promise(r => { resolve = r; });
+    const pending = s.controller.getQuote(inputs);
+    s.setAccount('CR123'); s.base.account_id = 'CR123';
+    resolve({ proposal: { id: 'late', ask_price: 1, payout: 2 } });
+    await assert.rejects(pending, /account or connection changed/i);
+});
+test('missing prices and rejected proposals cannot become purchases', async () => {
+    const s = setup();
+    s.api.send = async () => ({ proposal: { id: 'q', ask_price: 1 } });
+    await assert.rejects(s.controller.getQuote(inputs), /complete quote/);
+    s.api.send = async () => ({ error: { message: 'Market is closed' } });
+    await assert.rejects(s.controller.getQuote(inputs), /Market is closed/);
+});
+test('a purchase with unknown outcome is not retried', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    s.api.send = async () => { throw Error('connection lost'); };
+    await assert.rejects(s.controller.buy(q), /status is uncertain.*portfolio/i);
+    await assert.rejects(s.controller.buy(q), /Get a new quote/);
+});
+test('concurrent purchase attempts cannot send duplicate orders', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    let resolve, count = 0;
+    s.api.send = () => { count++; return new Promise(r => { resolve = r; }); };
+    const first = s.controller.buy(q);
+    await assert.rejects(s.controller.buy(q), /already being processed/);
+    resolve({ buy: { contract_id: 42 } });
+    await first;
+    assert.equal(count, 1);
+});
+
+test('ambiguous account data is never labelled as demo', () => {
+    const s = setup();
+    const storage = { getItem: key => key === 'active_loginid' ? 'DOT123' : JSON.stringify({ DOT123: { currency: 'USD', account_type: 'real', is_virtual: true } }) };
+    assert.equal(connectedAccount(s.base, storage).demo, false);
+});
+
+test('uncertain purchases block new trades across controller instances until acknowledged', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    s.api.send = async () => { throw Error('connection lost'); };
+    await assert.rejects(s.controller.buy(q), /status is uncertain/);
+    assert.equal(s.controller.hasPending('DOT123'), true);
+    const afterReload = createTradeController(s.base, s.storage);
+    await assert.rejects(afterReload.getQuote(inputs), /check your Deriv portfolio/i);
+    afterReload.acknowledgePending();
+    assert.equal(afterReload.hasPending('DOT123'), false);
+});
+
+test('definitive Deriv rejection clears pending state without sending another purchase', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    s.api.send = async () => ({ error: { code: 'InsufficientBalance', message: 'Insufficient balance' } });
+    await assert.rejects(s.controller.buy(q), /Insufficient balance/);
+    assert.equal(s.controller.hasPending('DOT123'), false);
+});
+
+test('timed out purchases stay blocked even if Deriv responds later', async () => {
+    const s = setup();
+    const controller = createTradeController(s.base, s.storage, () => 1000, null, 10);
+    const q = await controller.getQuote(inputs);
+    let resolve;
+    s.api.send = () => new Promise(r => { resolve = r; });
+    await assert.rejects(controller.buy(q), /status is uncertain/);
+    resolve({ buy: { contract_id: 42 } });
+    await Promise.resolve();
+    assert.equal(controller.hasPending('DOT123'), true);
+    await assert.rejects(controller.getQuote(inputs), /check your Deriv portfolio/i);
+});
+
+test('refuses to trade if purchase safety state cannot be saved', async () => {
+    const s = setup(), q = await s.controller.getQuote(inputs);
+    s.storage.setItem = () => { throw Error('storage disabled'); };
+    await assert.rejects(s.controller.buy(q), /No order was sent/);
+    assert.equal(s.calls.filter(call => call.buy).length, 0);
+});
+
+test('expired OAuth session prevents new quotes or purchases', async () => {
+    const s = setup();
+    const session = { getItem: () => JSON.stringify({ access_token: 'test-token', expires_at: 2000 }) };
+    const controller = createTradeController(s.base, s.storage, () => 1000, session);
+    const q = await controller.getQuote(inputs);
+    const expired = createTradeController(s.base, s.storage, () => 2000, session);
+    await assert.rejects(expired.getQuote(inputs), /not connected/);
+    assert.equal(connectedAccount(s.base, s.storage, session, () => 2000), null);
+    assert.equal(q.account.id, 'DOT123');
+});
