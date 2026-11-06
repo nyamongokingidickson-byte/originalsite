@@ -18,3 +18,7 @@ The former local paper-account balance overrides and simulated trading mode are 
 The built-in ticket stores a pending-purchase warning before a buy request. If a response is lost or the browser closes, that ticket blocks further trades on the account until the user checks their Deriv portfolio and explicitly clears the warning. This warning does not cover bot purchases. Never assume an unconfirmed order failed; check the Deriv portfolio before retrying.
 
 For bot troubleshooting, use a demo account and verify that its strategy conditions are met, the selected market and contract are available, and the stake and balance are valid. Proposal and order errors should be checked in the bot's log. Automated tests use mocks and do not establish that live broker orders will execute.
+
+## Account service unavailable
+
+A `503` / `CircuitBreakerOpen` response from Deriv's accounts endpoint means that the service is temporarily refusing the request. The app retries the account lookup once; if it still fails, wait a few minutes and use **Retry sign in** on the error screen. If token exchange already succeeded, this resumes using the existing unexpired session rather than reusing the one-time authorization code. Do not repeatedly attempt trades while connectivity is uncertain. If the error persists, check Deriv's service status or contact Deriv support with the time and error code.
